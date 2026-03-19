@@ -39,13 +39,12 @@ def clean_tag(tag: str) -> str:
 @chat_router.message(F.text.startswith("\\add"))
 async def add_tag(message: Message):
 
-    match = re.search(r'"(.+?)"', message.text)
-
-    if not match:
-        await message.reply('Формат: \\add "tag"')
+    n = message.text.split()
+    if len(n) > 2:
+        await message.reply('Формат: \\add сам_тег')
         return
 
-    tag = clean_tag(match.group(1)).lower()
+    tag = clean_tag(n[1]).lower()
 
     chat_id = message.chat.id
     user_id = message.from_user.id
