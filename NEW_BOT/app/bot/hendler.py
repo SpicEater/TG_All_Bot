@@ -1,111 +1,40 @@
+import asyncio
+import re
 import aiosqlite
-from aiogram import Router
-from aiogram.types import Message
+from aiogram import Router, Bot
 
-chat_router = Router()
+from  aiogram.filters import Command, CommandStart
+from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 
+bot_router = Router()
 
-def clean_tag(tag: str) -> str:
-    return "".join(
-        c for c in tag
-        if c.isalnum() or c == "_"
-    )
+@bot_router.message(CommandStart())
+async def start_function(message:Message):
+    measage = 'Привет! Этот бот поможет тебе быстро упомянуть всех участников гуппы. Вот что он может:\n\n' \
+             '📋 Выбрать гуппу — выбери гуппу из списка уже добавленных для настройки.\n\n' \
+             '➕ Добавить бота — добавь меня в новый чат для работы.\n\n' \
+             'ℹ️ Поддержка — напиши в поддержку, если нужна помощь.\n\n' \
+             '💰 Донат — поддержи проект и помоги мне стать лучше! \n\n' \
+             'Нажми на кнопку ниже, чтобы выбрать действие!'
+    buttons = [
+        [InlineKeyboardButton(text='📋Выбрать гуппу', callback_data='group_selection')],
+                                 [InlineKeyboardButton(text='➕Добавить бота', callback_data='add_bot')],
+                                 [InlineKeyboardButton(text='ℹ️Поддержка', callback_data='suport'),
+                                  InlineKeyboardButton(text='🔒Донат', callback_data='donat')]
+    ]
+    mark = InlineKeyboardMarkup(inline_keyboard = buttons)
+    await message.answer(measage, reply_markup=mark)
 
+@bot_router.message(Command('admins'))
+async def info_chat(message:Message, bot:Bot):
+    admins = await bot.get_chat_administrators(message.chat.id)
+    admin_list = "Список администраторов:\n\n"
+    for admin in admins:
+        user = admin.user
+        status = "Создатель" if admin.status == 'creator' else "Администратор"
+        admin_list += f"• {user.full_name} (@{user.username}) - {status}\n"
+        if admin.custom_title:  # Если есть специальный титул
+            admin_list += f"  Титул: {admin.custom_title}\n"
 
-@chat_router.message()
-async def handle_tags(message: Message):
+    await message.answer(admin_list)
 
-    if not message.text:
-        return
-
-    text = message.text
-
-    # быстрый фильтр
-    if "#" not in text and "@" not in text:
-        return
-
-    if not message.entities:
-        return
-
-    chat_id = message.chat.id
-
-    found_tags = set()
-
-    # извлекаем теги
-    for entity in message.entities:
-
-        if entity.type not in ("hashtag", "mention"):
-            continue
-
-        raw = text[
-            entity.offset + 1 :
-            entity.offset + entity.length
-        ]
-
-        tag = clean_tag(raw).lower()
-
-        if tag:
-            found_tags.add(tag)
-
-    if not found_tags:
-        return
-
-    async with aiosqlite.connect("tag.db") as db:
-
-        for tag in found_tags:
-
-            # ищем tag_id
-            cursor = await db.execute(
-                """
-                SELECT id
-                FROM tags
-                WHERE tag = ? AND chat_id = ?
-                """,
-                (tag, chat_id)
-            )
-
-            row = await cursor.fetchone()
-
-            if not row:
-                continue
-
-            tag_id = row[0]
-
-            # получаем пользователей
-            cursor = await db.execute(
-                """
-                SELECT user_id, username
-                FROM tag_users
-                WHERE tag_id = ?
-                """,
-                (tag_id,)
-            )
-
-            users = await cursor.fetchall()
-
-            if not users:
-                continue
-
-            mentions = []
-
-            for user_id, username in users:
-
-                if username:
-                    mentions.append(f"@{username}")
-                else:
-                    mentions.append(
-                        f"<a href='tg://user?id={user_id}'>user</a>"
-                    )
-
-            # Telegram лимит 4096
-            chunk = ""
-            for m in mentions:
-
-                if len(chunk) + len(m) + 1 > 4000:
-                    await message.reply(chunk)
-                    chunk = ""
-
-                chunk += m + " "
-
-            if chunk:
-                await message.reply(chunk)
