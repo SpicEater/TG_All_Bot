@@ -1,6 +1,8 @@
 import aiosqlite, re
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message
+from aiogram.filters import Command, CommandObject
+# from NEW_BOT.chat_bot import bot
 
 TAG_CACHE = {}
 
@@ -8,43 +10,51 @@ chat_router = Router()
 
 async def load_cache():
     global TAG_CACHE
-
     TAG_CACHE = {}
 
     async with aiosqlite.connect("chat_conf/tag.db") as db:
 
         cursor = await db.execute("""
-            SELECT t.chat_id, t.tag, u.user_id, u.username
-            FROM tags t
-            JOIN tag_users u ON u.tag_id = t.id
+            SELECT c.chat_id, c.ping_chat, c.ping_bot,
+                   t.tag,
+                   u.user_id, u.username
+            FROM chats c
+            LEFT JOIN tags t ON t.chat_id = c.chat_id
+            LEFT JOIN tag_users u ON u.tag_id = t.id
         """)
 
         rows = await cursor.fetchall()
 
-    for chat_id, tag, user_id, username in rows:
+    for chat_id, ping_chat, ping_bot, tag, user_id, username in rows:
 
-        TAG_CACHE.setdefault(chat_id, {})
-        TAG_CACHE[chat_id].setdefault(tag, [])
+        TAG_CACHE.setdefault(chat_id, {
+            "ping_chat": ping_chat,
+            "ping_bot": ping_bot,
+            "tags": {}
+        })
 
-        if username:
-            mention = f"@{username}"
-        else:
-            mention = f"<a href='tg://user?id={user_id}'>user</a>"
+        if not tag or not user_id:
+            continue
 
-        TAG_CACHE[chat_id][tag].append(mention)
+        TAG_CACHE[chat_id]["tags"].setdefault(tag, [])
+
+        mention = f"@{username}" if username else f"<a href='tg://user?id={user_id}'>user</a>"
+
+        TAG_CACHE[chat_id]["tags"][tag].append((user_id, mention))
 
 def clean_tag(tag: str) -> str:
     return "".join(c for c in tag if c.isalnum() or c == "_")
 
-@chat_router.message(F.text.startswith("\\add"))
-async def add_tag(message: Message):
+@chat_router.message(Command('add'))
+async def add_tag(message: Message, command: CommandObject):
 
-    n = message.text.split()
-    if len(n) > 2:
+    if command.args == None:
+        tag = 'all'
+    elif not command.args.isspace():
+        tag = clean_tag(command.args).lower()
+    else:
         await message.reply('Формат: \\add сам_тег')
         return
-
-    tag = clean_tag(n[1]).lower()
 
     chat_id = message.chat.id
     user_id = message.from_user.id
@@ -53,7 +63,7 @@ async def add_tag(message: Message):
     async with aiosqlite.connect("chat_conf/tag.db") as db:
 
         await db.execute("""
-            INSERT OR IGNORE INTO tags(tag, chat_id)
+            INSERT OR IGNORE INTO tags (tag, chat_id)
             VALUES (?, ?)
         """, (tag, chat_id))
 
@@ -65,25 +75,34 @@ async def add_tag(message: Message):
         tag_id = (await cursor.fetchone())[0]
 
         await db.execute("""
-            INSERT OR IGNORE INTO tag_users(tag_id, user_id, username)
+            INSERT OR IGNORE INTO tag_users (tag_id, user_id, username)
             VALUES (?, ?, ?)
         """, (tag_id, user_id, username))
 
+        await db.execute("""
+            INSERT OR IGNORE INTO chats (chat_id)
+            VALUES (?)
+        """, (chat_id,))
+
         await db.commit()
 
-    # обновляем cache точечно
-    TAG_CACHE.setdefault(chat_id, {})
-    TAG_CACHE[chat_id].setdefault(tag, [])
+    # 🔥 точечное обновление cache
+    TAG_CACHE.setdefault(chat_id, {
+        "ping_chat": 1,
+        "ping_bot": 0,
+        "tags": {}
+    })
+
+    TAG_CACHE[chat_id]["tags"].setdefault(tag, [])
 
     mention = f"@{username}" if username else f"<a href='tg://user?id={user_id}'>user</a>"
 
-    if mention not in TAG_CACHE[chat_id][tag]:
-        TAG_CACHE[chat_id][tag].append(mention)
+    TAG_CACHE[chat_id]["tags"][tag].append((user_id, mention))
 
     await message.reply(f"Добавлен в тег {tag}")
 
 @chat_router.message()
-async def handle_tags(message: Message):
+async def handle_tags(message: Message, bot: Bot):
 
     if not message.text:
         return
@@ -104,6 +123,10 @@ async def handle_tags(message: Message):
 
     if not chat_cache:
         return
+
+    ping_chat = chat_cache["ping_chat"]
+    ping_bot = chat_cache["ping_bot"]
+    tags_map = chat_cache["tags"]
 
     found = set()
 
@@ -130,28 +153,45 @@ async def handle_tags(message: Message):
         return
 
     result_mentions = []
+    result_user_ids = set()
 
     for tag in found:
 
-        users = chat_cache.get(tag)
+        users = tags_map.get(tag)
+        if not users:
+            continue
 
-        if users:
-            result_mentions.extend(users)
+        for user_id, mention in users:
+            result_mentions.append(mention)
+            result_user_ids.add(user_id)
 
-    if not result_mentions:
-        return
+    # 🔥 ping в чате
+    if ping_chat and result_mentions:
 
-    # chunking
-    chunk = ""
+        chunk = ""
+        for m in result_mentions:
 
-    for m in result_mentions:
+            if len(chunk) + len(m) + 1 > 4000:
+                await message.reply(chunk)
+                chunk = ""
 
-        if len(chunk) + len(m) + 1 > 4000:
+            chunk += m + " "
+
+        if chunk:
             await message.reply(chunk)
-            chunk = ""
 
-        chunk += m + " "
+    # 🔥 уведомление в ЛС
+    if ping_bot and result_user_ids:
 
-    if chunk:
-        await message.reply(chunk)
+        text_dm = (
+            f"Вас упомянули по тегу.\n"
+            f"Чат: {message.chat.title}\n"
+            f"Сообщение:\n"
+            f"{message.text[:500]}"
+        )
 
+        for uid in result_user_ids:
+            try:
+                await bot.send_message(uid, text_dm)
+            except:
+                pass
