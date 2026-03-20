@@ -1,46 +1,49 @@
-import aiosqlite, re
+import aiosqlite, asyncio
 from aiogram import Router, F, Bot
 from aiogram.types import Message
 from aiogram.filters import Command, CommandObject
-# from NEW_BOT.chat_bot import bot
 
 TAG_CACHE = {}
 
 chat_router = Router()
 
 async def load_cache():
+
     global TAG_CACHE
     TAG_CACHE = {}
 
     async with aiosqlite.connect("chat_conf/tag.db") as db:
 
         cursor = await db.execute("""
-            SELECT c.chat_id, c.ping_chat, c.ping_bot,
-                   t.tag,
-                   u.user_id, u.username
-            FROM chats c
-            LEFT JOIN tags t ON t.chat_id = c.chat_id
-            LEFT JOIN tag_users u ON u.tag_id = t.id
+            SELECT
+                t.chat_id,
+                t.tag,
+                u.user_id,
+                u.username,
+                s.ping_chat,
+                s.ping_bot
+            FROM tags t
+            JOIN tag_users u ON u.tag_id = t.id
+            LEFT JOIN chats s
+                ON s.chat_id = t.chat_id
+                AND s.user_id = u.user_id
         """)
 
         rows = await cursor.fetchall()
 
-    for chat_id, ping_chat, ping_bot, tag, user_id, username in rows:
+    for chat_id, tag, uid, username, ping_chat, ping_bot in rows:
 
-        TAG_CACHE.setdefault(chat_id, {
-            "ping_chat": ping_chat,
-            "ping_bot": ping_bot,
-            "tags": {}
+        TAG_CACHE.setdefault(chat_id, {})
+        TAG_CACHE[chat_id].setdefault(tag, [])
+
+        mention = f"@{username}" if username else f"<a href='tg://user?id={uid}'>user</a>"
+
+        TAG_CACHE[chat_id][tag].append({
+            "uid": uid,
+            "mention": mention,
+            "ping_chat": ping_chat if ping_chat is not None else 1,
+            "ping_bot": ping_bot if ping_bot is not None else 1
         })
-
-        if not tag or not user_id:
-            continue
-
-        TAG_CACHE[chat_id]["tags"].setdefault(tag, [])
-
-        mention = f"@{username}" if username else f"<a href='tg://user?id={user_id}'>user</a>"
-
-        TAG_CACHE[chat_id]["tags"][tag].append((user_id, mention))
 
 def clean_tag(tag: str) -> str:
     return "".join(c for c in tag if c.isalnum() or c == "_")
@@ -80,9 +83,9 @@ async def add_tag(message: Message, command: CommandObject):
         """, (tag_id, user_id, username))
 
         await db.execute("""
-            INSERT OR IGNORE INTO chats (chat_id)
-            VALUES (?)
-        """, (chat_id,))
+            INSERT OR IGNORE INTO chats (chat_id, user_id)
+            VALUES (?, ?)
+        """, (chat_id, user_id))
 
         await db.commit()
 
@@ -104,10 +107,10 @@ async def add_tag(message: Message, command: CommandObject):
 @chat_router.message()
 async def handle_tags(message: Message, bot: Bot):
 
-    if not message.text:
+    if not message.text and not message.caption:
         return
 
-    text = message.text
+    text = message.text or message.caption
 
     if "#" not in text and "@" not in text:
         return
@@ -123,10 +126,6 @@ async def handle_tags(message: Message, bot: Bot):
 
     if not chat_cache:
         return
-
-    ping_chat = chat_cache["ping_chat"]
-    ping_bot = chat_cache["ping_bot"]
-    tags_map = chat_cache["tags"]
 
     found = set()
 
@@ -152,46 +151,46 @@ async def handle_tags(message: Message, bot: Bot):
     if not found:
         return
 
-    result_mentions = []
-    result_user_ids = set()
+    mentions = []
+    dm_users = set()
 
     for tag in found:
 
-        users = tags_map.get(tag)
+        users = chat_cache.get(tag)
         if not users:
             continue
 
-        for user_id, mention in users:
-            result_mentions.append(mention)
-            result_user_ids.add(user_id)
+        for u in users:
 
-    # 🔥 ping в чате
-    if ping_chat and result_mentions:
+            if u["ping_chat"]:
+                mentions.append(u["mention"])
 
-        chunk = ""
-        for m in result_mentions:
+            if u["ping_bot"]:
+                dm_users.add(u["uid"])
 
-            if len(chunk) + len(m) + 1 > 4000:
-                await message.reply(chunk)
-                chunk = ""
+    # ping chat
+    chunk = ""
+    for m in mentions:
 
-            chunk += m + " "
-
-        if chunk:
+        if len(chunk) + len(m) + 1 > 4000:
             await message.reply(chunk)
+            chunk = ""
 
-    # 🔥 уведомление в ЛС
-    if ping_bot and result_user_ids:
+        chunk += m + " "
 
-        text_dm = (
-            f"Вас упомянули по тегу.\n"
-            f"Чат: {message.chat.title}\n"
-            f"Сообщение:\n"
-            f"{message.text[:500]}"
-        )
+    if chunk:
+        await message.reply(chunk)
 
-        for uid in result_user_ids:
-            try:
-                await bot.send_message(uid, text_dm)
-            except:
-                pass
+    # ping bot (параллельно)
+    text_dm = (
+        f"Вас упомянули по тегу\n"
+        f"Чат: [{message.chat.title}]({message.get_url()})"
+    )
+
+    tasks = [
+        bot.send_message(uid, text_dm, parse_mode="MarkdownV2")
+        for uid in dm_users
+    ]
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
