@@ -97,6 +97,8 @@ async def add_tag(message: Message, command: CommandObject):
         else f"<a href='tg://user?id={user_id}'>user</a>"
     )
 
+    await message.reply(f'Теперь вы в теге {tag}')
+
     if not any(u[0] == user_id for u in tag_list):
         tag_list.append((user_id, mention, 1, 1))
 
