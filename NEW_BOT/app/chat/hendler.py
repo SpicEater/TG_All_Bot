@@ -206,7 +206,7 @@ async def handle_tags(message: Message, bot: Bot):
     text = message.text or message.caption
 
     if not TAG_CACHE:
-        load_cache()
+        await load_cache()
 
     chat_cache = TAG_CACHE.get(message.chat.id)
     if not chat_cache:
