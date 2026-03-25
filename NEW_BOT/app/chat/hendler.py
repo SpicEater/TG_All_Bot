@@ -168,6 +168,15 @@ async def del_tag(message: Message, command: CommandObject):
             else:
                 del chat_cache[tag]
 
+
+@chat_router.message(Command("reset"))
+async def reboot_cache(message: Message):
+    if not message.chat.type == 'private':
+        return
+    if message.from_user.id == 911810571:
+        await load_cache()
+        await message.reply('Кэш обновлен')
+
 def ultra_fast_tags(text: str):
 
     tags = set()
