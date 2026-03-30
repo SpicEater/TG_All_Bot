@@ -1,7 +1,7 @@
 from NEW_BOT.chat_conf.token import DB
 
 import aiosqlite, asyncio
-from aiogram import Router, F, Bot
+from aiogram import Router, Bot
 from aiogram.types import Message
 from aiogram.filters import Command, CommandObject
 
@@ -9,12 +9,16 @@ TAG_CACHE = {}
 
 chat_router = Router()
 
+def get_cash():
+    global TAG_CACHE
+    return TAG_CACHE
+
 async def load_cache():
 
     global TAG_CACHE
     TAG_CACHE = {}
 
-    async with aiosqlite.connect("tag.db") as db:
+    async with aiosqlite.connect(DB) as db:
 
         cursor = await db.execute("""
             SELECT
@@ -51,7 +55,7 @@ def clean_tag(tag: str) -> str:
 @chat_router.message(Command('add'))
 async def add_tag(message: Message, command: CommandObject):
 
-    if command.args == None:
+    if command.args is None:
         tag = 'all'
     elif not command.args.isspace():
         tag = clean_tag(command.args).lower()
@@ -80,9 +84,8 @@ async def add_tag(message: Message, command: CommandObject):
         tag_id = (await cursor.fetchone())[0]
 
         await db.execute("""
-            INSERT OR IGNORE INTO tag_users(
-                tag_id, user_id, username
-            )
+            INSERT OR IGNORE INTO tag_users
+            (tag_id, user_id, username)
             VALUES (?, ?, ?)
         """, (tag_id, user_id, username))
 
@@ -100,12 +103,12 @@ async def add_tag(message: Message, command: CommandObject):
     await message.reply(f'Теперь вы в теге {tag}')
 
     if not any(u[0] == user_id for u in tag_list):
-        tag_list.append((user_id, mention, 1, 1))
+        tag_list.append((user_id, mention, 1, 0))
 
 @chat_router.message(Command('del'))
 async def del_tag(message: Message, command: CommandObject):
 
-    if command.args == None:
+    if command.args is None:
         tag = 'all'
     elif not command.args.isspace():
         tag = clean_tag(command.args).lower()
